@@ -26,7 +26,7 @@ post_date: 2026-01-22
 
 **Epic Name:** Multi-Tenant CRM Platform Foundation
 
-**Scope:** Phase 1 MVP - Core platform infrastructure + CRM module + Process Management + Product Management
+**Scope:** Phase 1 MVP - Core platform infrastructure + CRM module + Process Management + Product Management + Tenant Subdomain Allocation
 
 **Alignment:** Business Requirements Document v1.0 (Approved)
 
@@ -48,6 +48,8 @@ Build a secure, modular Multi-Tenant CRM Platform using Next.js and Supabase tha
 - Provides a CRM-first module with core entities (organizations, contacts, deals)
 - Establishes a shared core platform layer (tenants, users, roles, auth)
 - Decouples user signup from tenant creation (tenants created only on contract signing)
+- Allocates unique subdomains to each tenant (e.g., `acme.aura.com`) for workspace isolation
+- Maintains root domain (e.g., `aura.com`) for company marketing, landing page, and public content
 - Enables flexible process management for deal stage workflows
 - Includes product management with pricing blueprints and deal product line items
 - Enables future module expansion (HCM, testing systems, internal tools) without architectural re-engineering
@@ -59,6 +61,7 @@ Build a secure, modular Multi-Tenant CRM Platform using Next.js and Supabase tha
 - Enable SMBs (10–300 employees) to adopt a CRM solution at 40–60% cost reduction vs. enterprise platforms
 - Achieve zero cross-tenant data leakage incidents through enforced database-level security
 - Reduce time-to-activate new tenants (from contract to go-live) to <1 hour via automated provisioning
+- Provide each tenant with branded workspace URL (`tenant-name.aura.com`) for professional appearance and easy access
 - Allow flexible sales processes with customizable deal stages per tenant
 - Enable dynamic pricing through product blueprints and adjustable deal line items
 - Establish a reusable platform foundation for launching 3+ additional business modules within 12–18 months
@@ -290,6 +293,8 @@ Build a secure, modular Multi-Tenant CRM Platform using Next.js and Supabase tha
 - **F1.8:** Tenant deletion shall hard-delete or archive all associated data (configurable retention policy)
 - **F1.9:** System shall support tenant suspension (data preserved, access revoked)
 - **F1.10:** System shall track tenant lifecycle stages (prospect → pending → active → suspended → deleted)
+- **F1.11:** System shall allocate unique subdomains to each tenant (e.g., `tenant-name.aura.com`) for workspace isolation
+- **F1.12:** System shall maintain root domain (e.g., `aura.com`) for company marketing, landing page, and public content
 
 #### F2. Authentication & Authorization
 
