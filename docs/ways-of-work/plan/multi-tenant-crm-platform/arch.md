@@ -16,11 +16,13 @@ The technical approach uses a **domain-driven architecture** pattern with clear 
 - **Tenant Subdomain Layer** (`{tenant-name}.aura.com`): Isolated tenant workspaces with database-enforced RLS, accessible only to authenticated tenant members
 - **Core Platform Layer**: Tenant management, authentication (Stack Auth), user membership, RBAC, contract lifecycle, and tenant activation workflow
 - **Module Layer**: CRM module (Phase 1) with organization, contact, deal management, activity tracking, and deal composition
-- **Process Management Layer**: Deal pipeline configuration, stage customization, and stage lifecycle management per tenant
+- **Process Management Layer**: Multi-process sales pipeline support with process configuration, stage customization, and stage lifecycle management per tenant
 - **Product Management Layer**: Product catalog, pricing blueprints, pricing history, and deal line item management
 - **Infrastructure Layer**: Next.js application frontend, tRPC API layer, PostgreSQL with RLS policies, Supabase managed services, and Redis caching
 
 The system enforces tenant isolation at the database level through PostgreSQL RLS policies, ensuring no application-layer bypasses can compromise data security. Each tenant receives a unique subdomain during onboarding (e.g., `acme.aura.com`), providing a branded and professional workspace URL while maintaining complete data isolation through database-level security policies. The contract signing workflow decouples user signup from tenant creation—users sign up first (pre-tenant state), and tenants are provisioned only upon contract signing and system admin approval.
+
+**Key architectural enhancement:** The system supports multiple customizable sales processes per tenant. Each deal is associated with exactly one sales process at creation time. Sales processes contain ordered sequences of stages, enabling teams to use different pipelines for different deal types (e.g., enterprise vs. SMB vs. partner channel).
 
 ---
 
@@ -54,7 +56,7 @@ graph TB
         CRMService["CRM Service<br/>(Org/Contact/Deal)"]
         ActivityService["Activity Service<br/>(Calls, Emails, Notes)"]
         RBACService["RBAC Service<br/>(Role & Permissions)"]
-        ProcessMgmtService["Process Management Service<br/>(Deal Stages, Config)"]
+        ProcessMgmtService["Process Management Service<br/>(Sales Processes, Stages)"]
         ProductMgmtService["Product Management Service<br/>(Catalog, Blueprints)"]
         DealCalcService["Deal Calculation Service<br/>(Pricing, Line Items)"]
     end
@@ -97,10 +99,11 @@ graph TB
     CRMService -->|Log Interactions| ActivityService
     CRMService -->|Check Roles| RBACService
     UserService -->|Check Roles| RBACService
-    CRMService -->|Manage Stages| ProcessMgmtService
+    CRMService -->|Manage Processes| ProcessMgmtService
+    CRMService -->|Validate Process| ProcessMgmtService
     CRMService -->|Manage Products| ProductMgmtService
     CRMService -->|Calculate Deal Total| DealCalcService
-    ProcessMgmtService -->|Validate Stage| ProcessMgmtService
+    ProcessMgmtService -->|Validate Stages| ProcessMgmtService
     ProductMgmtService -->|Get Pricing| DealCalcService
     DealCalcService -->|Calculate Line Items| DealCalcService
 
@@ -111,13 +114,13 @@ graph TB
     CRMService -->|Query with tenant_id| PostgreSQL
     ActivityService -->|Log Activity| PostgreSQL
     RBACService -->|Query Roles| PostgreSQL
-    ProcessMgmtService -->|Query/Update Stages| PostgreSQL
+    ProcessMgmtService -->|Query/Update Processes| PostgreSQL
     ProductMgmtService -->|Query/Update Products| PostgreSQL
     DealCalcService -->|Calculate from Data| PostgreSQL
     PostgreSQL -->|Enforce RLS| RLSPolicies
     PostgreSQL -->|Managed By| SupabaseDB
     SessionMgmt -->|Cache Tokens| Cache
-    ProcessMgmtService -->|Cache Stages| Cache
+    ProcessMgmtService -->|Cache Processes| Cache
     ProductMgmtService -->|Cache Products| Cache
 
     %% Infrastructure
@@ -185,7 +188,7 @@ graph TB
    - Automatic isolated tenant creation upon approval
    - Automatic subdomain allocation from DNS pool
    - Signup user automatically promoted to tenant admin on activation
-   - Initial product catalog and deal stages seeding on activation
+   - Initial product catalog and default sales process seeding on activation
 
 #### CRM Module Features
 
@@ -212,9 +215,10 @@ graph TB
 
    - Create, read, update, delete deals
    - Deal lifecycle (from creation through closure)
-   - Deal composition: amount, probability, close date, stage, associated contact/organization
-   - Deal filtering (by stage, owner, probability, organization, date range)
+   - Deal composition: amount, probability, close date, sales process, stage, associated contact/organization
+   - Deal filtering (by sales process, stage, owner, probability, organization, date range)
    - User assignment and reassignment (managers and admins only)
+   - Deal-to-process binding at creation time (immutable relationship)
    - Deal audit trail (stage changes, price adjustments, product additions/removals)
    - Deal stage immutability for historical records
    - Tenant-scoped deal storage with RLS enforcement
@@ -236,15 +240,21 @@ graph TB
 
 #### Process Management Features
 
-11. **Deal Pipeline/Stage Management**
+11. **Multi-Process Sales Pipeline Management**
 
-    - Default deal pipeline: Prospect → Qualified → Proposal → Negotiation → Won/Lost
-    - Per-tenant customizable deal stages (add, remove, rename, reorder)
+    - Support for multiple sales processes per tenant (e.g., "Enterprise Sales", "SMB Sales", "Partner Channel")
+    - Each sales process contains an ordered sequence of deal stages
+    - Default sales process: Prospect → Qualified → Proposal → Negotiation → Won/Lost
+    - Per-tenant customizable sales processes (create, update, delete, reorder)
+    - Per-process customizable deal stages (add, remove, rename, reorder within process)
     - Stage metadata support (required fields, win probability defaults)
-    - Stage change tracking with timestamps and user attribution
+    - Deal binding to single sales process at creation time
+    - Process-level stage change tracking with timestamps and user attribution
     - Stage immutability for historical deals (stage names locked on closure)
     - Prevention of stage deletion with active deals without confirmation
-    - Drag-and-drop and UI controls for deal stage movement
+    - Drag-and-drop and UI controls for deal stage movement within process
+    - Default process designation for new deals
+    - Process filtering and organization in dashboards
 
 #### Product Management Features
 
@@ -279,16 +289,19 @@ graph TB
    - Tenant isolation at the database level via RLS
    - Contract status field on users table (prospect → contract_signed → pending → activated)
    - Tenant subdomain field for unique workspace URL allocation
-   - Proper indexing on `tenant_id`, `assigned_to`, `stage`, `created_at`, `product_id`, `contract_status`
+   - Sales Process table (tenant-scoped, immutable once in use)
+   - Deal Stages table (per-process, tenant-scoped)
+   - Deal-to-Process foreign key relationship (1-to-1 at creation)
+   - Proper indexing on `tenant_id`, `process_id`, `assigned_to`, `stage`, `created_at`, `product_id`, `contract_status`
    - Audit tables for compliance:
      - User creation/deactivation events
      - Role assignment changes
      - Data deletion events
      - RLS policy violations
      - Deal stage transitions with timestamps and user attribution
+     - Process creation and modifications
      - Pricing changes with before/after values
      - Deal line item additions/removals
-   - Deal stage configuration table (per-tenant, immutable for closed deals)
    - Product and pricing blueprint tables
    - Deal line items table with quantity and unit price override
    - Activity log table with immutable records
@@ -309,6 +322,7 @@ graph TB
    - tRPC for type-safe, end-to-end typed APIs
    - Middleware for tenant context extraction and validation
    - Contract status validation middleware (prevent pre-tenant users from accessing tenant data)
+   - Process context validation middleware (ensure deal belongs to correct process)
    - Error handling and validation with structured error responses
    - Rate limiting (100 requests per minute per user)
    - Endpoint documentation via OpenAPI/Swagger
@@ -321,16 +335,17 @@ graph TB
    - Subdomain routing for root domain vs. tenant domains
    - Support for real-time deal calculations (<500ms latency)
    - Session management with tenant context
+   - Process context propagation through component hierarchy
 
 5. **Service Layer Expansion**
 
-   - **Tenant Service**: Manage tenant lifecycle, contract status, activation workflow, subdomain allocation
+   - **Tenant Service**: Manage tenant lifecycle, contract status, activation workflow, subdomain allocation, default process seeding
    - **Contract Management Service**: Track contract signing, trigger provisioning, approve activations
    - **Activity Service**: Log and retrieve activity records for contacts, immutability enforcement
-   - **Process Management Service**: Handle deal stage configuration, stage transitions, stage validation per tenant, reordering
+   - **Process Management Service**: Handle sales process creation/updates, stage configuration, stage transitions, stage validation per process, reordering, default process management
    - **Product Management Service**: Handle product catalog, pricing blueprints, pricing history, product activation/deactivation
    - **Deal Calculation Service**: Real-time calculation of deal totals from line items, pricing blueprint inheritance, price override tracking
-   - Enhanced **CRM Service**: Support for deal line items, activity tracking, user assignment validation, deal filtering and composition
+   - Enhanced **CRM Service**: Support for deal line items, activity tracking, user assignment validation, deal filtering by process and composition, process binding validation
 
 6. **Monorepo Structure**
 
@@ -344,18 +359,18 @@ graph TB
    - Docker containerization for services
    - Supabase managed PostgreSQL
    - Environment configuration management
-   - Support for automated tenant provisioning
+   - Support for automated tenant provisioning with process seeding
    - DNS/subdomain management for tenant allocation
    - Multi-environment support (dev, staging, production)
 
 8. **Caching & Performance**
    - Redis for session caching and token validation
-   - Query result caching for frequently accessed data (product catalog, deal stages)
-   - Deal stage configuration caching per tenant
+   - Query result caching for frequently accessed data (product catalog, sales processes, deal stages)
+   - Sales process configuration caching per tenant
    - Product pricing blueprint caching
    - RLS policy optimization for large tenant datasets
    - Deal calculation result caching where appropriate
-   - Cache invalidation on pricing or stage configuration changes
+   - Cache invalidation on pricing, stage configuration, or process changes
 
 ---
 
@@ -381,13 +396,14 @@ graph TB
 
 ### Key Entities (RLS-Protected)
 
-- **Tenants**: `id`, `name`, `subdomain` (unique), `status` (prospect → pending → active → suspended → deleted), `metadata` (logo, industry, timezone)
+- **Tenants**: `id`, `name`, `subdomain` (unique), `status` (prospect → pending → active → suspended → deleted), `default_process_id` (FK to SalesProcess), `metadata` (logo, industry, timezone)
 - **Users**: `id`, `email`, `contract_status` (prospect → contract_signed → pending → activated), `created_at`
 - **TenantMembers**: `user_id`, `tenant_id`, `role` (Admin, Manager, SalesRep) - junction table
 - **Organizations**: `tenant_id`, `id`, `name`, `industry`, `size`, `location`, `website`, `created_by`, `updated_by`, `created_at`, `updated_at`
 - **Contacts**: `tenant_id`, `id`, `name`, `email` (unique per tenant), `phone`, `title`, `organization_id`, `assigned_to`, `created_by`, `updated_by`, `created_at`, `updated_at`
-- **Deals**: `tenant_id`, `id`, `name`, `amount`, `probability`, `close_date`, `stage`, `organization_id`, `assigned_to`, `created_by`, `updated_by`, `created_at`, `updated_at`
-- **DealStages**: `tenant_id`, `id`, `name`, `sequence`, `metadata` (required_fields, win_probability), `created_by`, `updated_by`, `created_at`
+- **SalesProcesses**: `tenant_id`, `id`, `name`, `is_default`, `description`, `created_by`, `updated_by`, `created_at`, `updated_at`
+- **ProcessStages**: `process_id` (FK to SalesProcesses), `tenant_id`, `id`, `name`, `sequence`, `metadata` (required_fields, win_probability), `created_by`, `updated_by`, `created_at`
+- **Deals**: `tenant_id`, `id`, `name`, `amount`, `probability`, `close_date`, `process_id` (FK to SalesProcesses, immutable), `stage`, `organization_id`, `assigned_to`, `created_by`, `updated_by`, `created_at`, `updated_at`
 - **Products**: `tenant_id`, `id`, `sku`, `name`, `description`, `category`, `is_active`, `created_by`, `updated_by`, `created_at`, `updated_at`
 - **PricingBlueprints**: `product_id`, `default_price`, `cost`, `discount_policy`, `margin_targets`, `created_by`, `updated_by`, `created_at`, `updated_at`
 - **DealLineItems**: `deal_id`, `product_id`, `quantity`, `unit_price` (override), `created_by`, `updated_by`, `created_at`, `updated_at`
@@ -398,10 +414,13 @@ graph TB
 
 - **All entities include `tenant_id`** as a foreign key and part of RLS policies (except Users, Tenants, TenantMembers core tables)
 - **All queries are tenant-aware** and include `WHERE tenant_id = current_user_tenant_id()`
-- **RLS Policies enforce**: Users can only see/modify data within their tenant
-- **Indexes on `tenant_id`, `assigned_to`, `stage`, `created_at`, `product_id`, `contract_status`** for query performance
+- **Process-Stage Hierarchy**: ProcessStages are organized by process; each deal references one process via immutable FK
+- **Deal-Process Binding**: Deals include `process_id` FK set at creation and immutable thereafter
+- **RLS Policies enforce**: Users can only see/modify data within their tenant and associated with their tenant's processes
+- **Indexes on `tenant_id`, `process_id`, `assigned_to`, `stage`, `created_at`, `product_id`, `contract_status`** for query performance
 - **Audit trail columns** (`created_by`, `updated_by`, `created_at`, `updated_at`) on all business entities
 - **Immutable records** for Activities and AuditLogs (no update, only insert and soft-delete)
+- **Immutable relationships** for Deal.process_id (enforced at DB level via constraint)
 
 ---
 
@@ -426,17 +445,20 @@ graph TB
    - Approves activation via system interface
    - Triggers automatic workflow:
      - Tenant created in `Tenants` table with `status = 'pending'`
+     - Default SalesProcess created with default stages (Prospect → Qualified → Proposal → Negotiation → Won/Lost)
+     - ProcessStages created and associated with default SalesProcess
+     - `Tenants.default_process_id` set to newly created default process
      - Unique subdomain allocated from DNS pool (e.g., `acme.aura.com`)
      - TenantMember created: signup user + Tenant + Admin role
      - Initial product catalog seeded (if provided)
-     - Default deal stages seeded
      - `Users.contract_status` updated to `'activated'`
      - `Tenants.status` updated to `'active'`
 
 4. **Tenant Admin Configures Workspace**
 
    - Admin enters organization metadata (company name, logo, industry, timezone)
-   - Admin customizes deal pipeline stages if needed
+   - Admin can customize default sales process stages if needed
+   - Admin can create additional sales processes for different deal types
    - Admin customizes product catalog and pricing if needed
    - Admin invites team members via email (auto-generate 7-day invite links)
 
@@ -445,6 +467,7 @@ graph TB
    - Create passwords on first login
    - Assigned to tenant with appropriate role (Sales Rep, Manager)
    - Access CRM via tenant subdomain (e.g., `acme.aura.com`)
+   - See deals organized by their assigned sales processes
 
 ### Subdomain Allocation Strategy
 
@@ -462,26 +485,35 @@ graph TB
 
 **Responsibilities:**
 
-- View, create, update, delete deal stages per tenant
-- Reorder stages to define custom pipeline
+- Create, view, update, delete sales processes per tenant
+- Create, view, update, delete deal stages within each sales process
+- Reorder stages to define custom pipeline sequence within each process
 - Track stage metadata (required fields, win probability defaults)
 - Prevent deletion of stages with active deals (with confirmation)
-- Log all stage configuration changes in audit trail
-- Cache stage configuration in Redis per tenant for performance
+- Manage default process designation per tenant
+- Log all process and stage configuration changes in audit trail
+- Cache process configuration in Redis per tenant for performance
+- Validate process-deal relationship integrity
+- Support process filtering in dashboard views
 
 **API Contracts:**
 
-- `GET /stages` - List all stages for tenant
-- `POST /stages` - Create new stage
-- `PUT /stages/{id}` - Update stage
-- `DELETE /stages/{id}` - Delete stage (with validation)
-- `POST /stages/{id}/reorder` - Reorder stages
+- `GET /processes` - List all sales processes for tenant
+- `POST /processes` - Create new sales process
+- `PUT /processes/{id}` - Update sales process
+- `DELETE /processes/{id}` - Delete sales process (with validation)
+- `POST /processes/{id}/set-default` - Set as default process
+- `GET /processes/{id}/stages` - List all stages in process
+- `POST /processes/{id}/stages` - Create new stage in process
+- `PUT /processes/{id}/stages/{stageId}` - Update stage
+- `DELETE /processes/{id}/stages/{stageId}` - Delete stage (with validation)
+- `POST /processes/{id}/stages/reorder` - Reorder stages in process
 
 **Integration Points:**
 
-- CRM Service: Validate stage transitions on deal updates
+- CRM Service: Validate process binding on deal creation, validate stage transitions within process
 - Deal Calculation Service: Use stage metadata for calculations
-- Redis Cache: Cache stage configuration for fast lookups
+- Redis Cache: Cache process and stage configuration for fast lookups
 
 ### Product Management Service
 
@@ -530,7 +562,7 @@ graph TB
 **Integration Points:**
 
 - Product Management Service: Retrieve pricing blueprints
-- CRM Service: Fetch deal data and update totals
+- CRM Service: Fetch deal data and update totals, validate process context
 - Audit Service: Log all pricing changes and overrides
 
 ---
@@ -543,19 +575,19 @@ graph TB
 
 1. **Security Foundation**: Database-enforced tenant isolation via RLS eliminates cross-tenant data leakage risks at the architecture level, not just the application level. Contract signing workflow adds additional security gate for activation.
 
-2. **Multi-Workspace Isolation**: Unique subdomain allocation per tenant provides logical separation and branded workspace URLs, enhancing user experience while maintaining database-level isolation.
+2. **Multi-Workspace & Multi-Process Isolation**: Unique subdomain allocation per tenant provides logical separation. Multiple sales processes per tenant enable logical segmentation without requiring separate infrastructure. Deal-to-process binding prevents cross-process data leakage.
 
-3. **Scalability**: The modular, domain-driven design allows future modules (HCM, testing systems, internal tools) to be added without re-architecting core systems or the tenant isolation mechanism.
+3. **Scalability**: The modular, domain-driven design allows future modules (HCM, testing systems, internal tools) to be added without re-architecting core systems or the tenant/process isolation mechanism.
 
-4. **Developer Velocity**: End-to-end type safety with TypeScript and tRPC reduces runtime errors and improves code quality. Monorepo structure enables code sharing and faster development. Deal calculation and product management services are independently testable.
+4. **Developer Velocity**: End-to-end type safety with TypeScript and tRPC reduces runtime errors and improves code quality. Monorepo structure enables code sharing and faster development. Deal calculation and product management services are independently testable. Process-driven data model enables clean separation of concerns.
 
-5. **Maintainability**: Clear separation between core platform (tenant, user, auth, contract workflow) and business modules (CRM, process management, product management) makes the codebase easier to understand, test, and extend.
+5. **Maintainability**: Clear separation between core platform (tenant, user, auth, contract workflow) and business modules (CRM, process management, product management) makes the codebase easier to understand, test, and extend. Process hierarchy simplifies complex sales workflows.
 
-6. **Compliance Ready**: Audit logs, RLS policies, tenant isolation, and immutable activity records support GDPR, SOC2, and other regulatory requirements. Contract status tracking provides clear tenant lifecycle audit trail.
+6. **Compliance Ready**: Audit logs, RLS policies, tenant isolation, process change tracking, and immutable activity records support GDPR, SOC2, and other regulatory requirements. Contract status tracking provides clear tenant lifecycle audit trail.
 
-7. **Operational Efficiency**: Automated tenant provisioning on contract approval reduces manual overhead and enables faster customer onboarding (<1 hour from activation to team access).
+7. **Operational Efficiency**: Automated tenant provisioning on contract approval reduces manual overhead and enables faster customer onboarding (<1 hour from activation to team access). Multi-process support reduces complexity for sales teams managing diverse deal types.
 
-8. **Future-Proof**: The modular architecture reduces technical debt and enables the platform to evolve without major refactors. Process and product management services are designed for per-tenant customization without affecting core platform.
+8. **Future-Proof**: The modular architecture reduces technical debt and enables the platform to evolve without major refactors. Process and product management services are designed for per-tenant customization without affecting core platform. Multi-process foundation enables scaling to 10+ processes per tenant.
 
 ---
 
@@ -565,31 +597,34 @@ graph TB
 
 ### Sizing Rationale
 
-- **Complexity**: Multi-tenant architecture with RLS policies, subdomain allocation, contract workflow, process management, product management, and deal calculations. Database schema design is complex; RLS policy setup requires careful testing. Deal calculation service with pricing overrides and audit trails adds complexity.
+- **Complexity**: Multi-tenant architecture with RLS policies, subdomain allocation, contract workflow, multi-process management, product management, and deal calculations. Database schema design is complex; process hierarchy adds complexity; RLS policy setup requires careful testing for process isolation.
 - **Scope**: Includes:
 
   - Core platform layer (tenant, user, auth, RBAC, contract workflow)
   - CRM module (organizations, contacts, deals, activity tracking, user assignment)
-  - Process management (customizable deal stages with metadata)
+  - Multi-process management (sales processes, stages per process, process-deal binding)
   - Product management (catalog, pricing blueprints, pricing history)
   - Deal composition (line items, pricing overrides, calculations)
-  - Multiple interconnected services with shared dependencies
+  - Multiple interconnected services with shared dependencies and process context propagation
 
 - **Deployment Infrastructure**: Docker containerization, Supabase setup, Redis caching, DNS/subdomain management, multi-environment configuration add overhead.
 
 - **Testing & Validation**: Extensive testing required to verify:
 
   - Tenant isolation across all entities
+  - Process isolation (no cross-process data leakage)
   - RBAC enforcement (Admin, Manager, SalesRep roles)
   - Deal calculations with pricing overrides
-  - Deal stage transitions and immutability
+  - Deal-process binding immutability
+  - Stage transitions within process
   - Contract signing workflow
   - Subdomain allocation uniqueness
   - Activity audit trail immutability
+  - Process-context propagation
 
-- **Documentation & Training**: Architecture, API contracts, deal calculation logic, pricing overrides, deployment procedures must be thoroughly documented for future module development.
+- **Documentation & Training**: Architecture, API contracts, deal calculation logic, pricing overrides, process management, deployment procedures must be thoroughly documented for future module development.
 
-**Estimated Duration**: 12–16 weeks for a team of 3–4 developers (design, implementation, testing, deployment, documentation).
+**Estimated Duration**: 14–18 weeks for a team of 3–4 developers (design, implementation, testing, deployment, documentation).
 
 ---
 
@@ -606,14 +641,14 @@ Root Domain (aura.com)
 Tenant Subdomain ({tenant}.aura.com)
 ├── User (authenticated, TenantMember)
 ├── Roles (Admin, Manager, SalesRep)
+├── Sales Processes (1..N per tenant)
+│   └── Process Stages (ordered, process-specific)
 ├── CRM Data
 │   ├── Organizations
 │   ├── Contacts
-│   ├── Deals
+│   ├── Deals (1..1 process binding)
 │   ├── DealLineItems
 │   └── Activities
-├── Process Management
-│   └── DealStages (customizable, immutable for closed deals)
 └── Product Management
     ├── Products
     ├── PricingBlueprints
@@ -627,10 +662,17 @@ User (Pre-Tenant)
 Deal
 ├── Organization
 ├── Contacts (many-to-many)
-├── Stage (references DealStage, immutable on closure)
+├── SalesProcess (1..1, immutable)
+├── Stage (references ProcessStage within the process, immutable on closure)
 ├── LineItems (DealLineItems, sum to deal total)
 ├── PricingAuditTrail (all adjustments logged)
 └── ActivityLog (linked to contacts)
+
+SalesProcess
+├── Tenant (many-to-1)
+├── ProcessStages (ordered)
+├── Deals (many-to-1)
+└── IsDefault (boolean, one per tenant)
 ```
 
 ---
@@ -669,21 +711,25 @@ Production Environment
 
 ## 12. Security Architecture
 
-### Tenant Isolation Strategy
+### Tenant & Process Isolation Strategy
 
 1. **Database Level (Primary)**
 
    - PostgreSQL RLS policies enforce tenant isolation
    - Policies check `auth.uid()` and map to `tenant_id` via TenantMember junction table
    - All queries filtered by `tenant_id` at the DB level
+   - Process-stage hierarchy scoped to tenant (no cross-tenant process access)
    - All sensitive operations logged in AuditLog table with immutability
+   - Deal.process_id immutable via DB constraint (prevent process reassignment)
 
 2. **Application Level (Defense-in-Depth)**
 
    - Extract tenant context from JWT token (includes tenant_id)
+   - Extract process context from deal queries (includes process_id)
    - Contract status validation: pre-tenant users cannot access tenant functionality
-   - Pass tenant context through tRPC middleware
+   - Pass tenant and process context through tRPC middleware
    - All tRPC resolvers validate tenant ownership before returning data
+   - Validate deal belongs to correct process before stage transitions
    - Role-based permission enforcement (Admin > Manager > SalesRep)
    - User assignment validation for SalesRep visibility
 
@@ -705,9 +751,11 @@ Production Environment
 
 - **Encryption in Transit**: HTTPS/TLS 1.2+ for all communications
 - **Encryption at Rest**: Database encryption via Supabase, configurable PII encryption per tenant
-- **Audit Logging**: All data access, modifications, and sensitive operations logged immutably
+- **Audit Logging**: All data access, modifications, sensitive operations, and process changes logged immutably
 - **Price Audit Trail**: All pricing changes (blueprint and overrides) tracked with before/after values
+- **Process Audit Trail**: All process and stage creation/modifications tracked with user attribution
 - **Activity Immutability**: Activity records cannot be edited, only archived/soft-deleted
+- **Deal-Process Binding**: Immutable at DB level, cannot be changed after creation
 - **Backup & Recovery**: Daily automated backups (30-day retention), disaster recovery <4 hours
 
 ---
@@ -715,16 +763,19 @@ Production Environment
 ## 13. Success Criteria
 
 - ✅ Zero cross-tenant data access incidents (verified by RLS policy testing and security audit)
-- ✅ RLS policies tested and validated for all tenant-scoped entities
-- ✅ Contract signing workflow functional with automated tenant provisioning
+- ✅ Zero cross-process data access incidents (verified by process isolation testing)
+- ✅ RLS policies tested and validated for all tenant-scoped entities and processes
+- ✅ Contract signing workflow functional with automated tenant provisioning and default process seeding
 - ✅ Subdomain allocation working and unique per tenant
 - ✅ CRM module fully functional for SMB sales teams (organizations, contacts, deals, activities)
+- ✅ Multi-process sales pipeline functional (create, configure, use processes; bind deals to processes)
 - ✅ Deal calculations accurate (<500ms latency) with pricing overrides audited
-- ✅ Deal stage customization per tenant working correctly
+- ✅ Deal stage customization per process working correctly
 - ✅ Product pricing blueprint inheritance and overrides functioning as expected
 - ✅ New tenants onboard without manual intervention (except admin approval of contract)
-- ✅ Tenant admin can configure deal stages and product catalog immediately post-activation
+- ✅ Tenant admin can configure sales processes and product catalog immediately post-activation
 - ✅ Activity audit trail complete and immutable
+- ✅ Process context correctly propagated through all operations
 - ✅ Platform architecture supports future module additions without refactor
 - ✅ API response times <2 seconds for list queries (10k records per tenant), <1 second for searches
 - ✅ Comprehensive documentation for developers and operations teams
@@ -741,11 +792,11 @@ This architecture supports adding new modules by:
 3. **Implementing domain services** in the service layer
 4. **Extending tRPC router** with new module routes
 5. **Caching new frequently-accessed data** in Redis
-6. **No changes to core platform**, authentication, or existing RLS policies required
+6. **No changes to core platform**, authentication, process management, or existing RLS policies required
 
 **Planned Modules** (High-Level Roadmap):
 
-- Phase 2: CRM enhancements (advanced reporting, deal workflows, email integration)
+- Phase 2: CRM enhancements (advanced reporting, deal workflows, email integration, process templates)
 - Phase 3: HCM (Human Capital Management - employees, departments, roles)
 - Phase 4: Testing/QA system (test cases, results, compliance tracking)
 - Phase 5: Marketplace and integrations (webhooks, third-party integrations, native integrations)
@@ -754,18 +805,20 @@ This architecture supports adding new modules by:
 
 ## 15. Risk Mitigation
 
-| Risk                            | Mitigation                                                                                                 |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| **RLS Policy Misconfiguration** | Thorough policy testing, code review, staging environment validation, automated RLS policy tests           |
-| **Performance Degradation**     | Index `tenant_id` and `assigned_to`, cache deal stages and product catalogs, profile queries, load testing |
-| **Cross-Tenant Data Leakage**   | Database-level enforcement, audit logging, regular security audits, penetration testing                    |
-| **Tenant Scaling Issues**       | Monitor query performance, plan for data archiving, consider sharding for very large tenants               |
-| **Developer Error**             | Middleware enforcement, TypeScript validation, comprehensive testing framework, code review process        |
-| **Deal Calculation Errors**     | Unit tests for pricing logic, audit trail validation, reconciliation reports                               |
-| **Subdomain Collision**         | Unique constraint at DB level, DNS validation before allocation, pre-check availability                    |
-| **Contract Workflow Confusion** | Clear documentation, UI indicators of activation status, logging of all state transitions                  |
-| **Activity Audit Trail Gaps**   | Immutable records, middleware logging, validation of completeness in testing                               |
+| Risk                                | Mitigation                                                                                               |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **RLS Policy Misconfiguration**     | Thorough policy testing, code review, staging environment validation, automated RLS policy tests         |
+| **Process-Deal Isolation Failures** | Dedicated process isolation tests, deal-process binding validation at API and DB level                   |
+| **Performance Degradation**         | Index `tenant_id`, `process_id`, `assigned_to`, cache processes and products, profile queries, load test |
+| **Cross-Tenant Data Leakage**       | Database-level enforcement, audit logging, regular security audits, penetration testing                  |
+| **Tenant Scaling Issues**           | Monitor query performance, plan for data archiving, consider sharding for very large tenants             |
+| **Developer Error**                 | Middleware enforcement, TypeScript validation, comprehensive testing framework, code review process      |
+| **Deal Calculation Errors**         | Unit tests for pricing logic, audit trail validation, reconciliation reports                             |
+| **Subdomain Collision**             | Unique constraint at DB level, DNS validation before allocation, pre-check availability                  |
+| **Contract Workflow Confusion**     | Clear documentation, UI indicators of activation status, logging of all state transitions                |
+| **Activity Audit Trail Gaps**       | Immutable records, middleware logging, validation of completeness in testing                             |
+| **Process Context Loss**            | Middleware enforcement of process context, tRPC type safety, integration tests for process routing       |
 
 ---
 
-**End of Architecture Specification v2.0**
+**End of Architecture Specification v2.1 (Updated with Multi-Process Model)**
